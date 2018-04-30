@@ -6,31 +6,31 @@
 import sys
 import getopt
 import mailbox
+import time
 
 def main(argv):
-	in_mbox = "source.mbox"
-	prefix = ""
+	in_mbox = "inbox.mbox"
+	out_box = "Maildir"
 	try:
-		opts, args = getopt.getopt(argv, "i:p:", ["infile=", "prefix="])
+		opts, args = getopt.getopt(argv, "i:o:", ["infile=", "outdir="])
 	except getopt.GetoptError:
-		print("python splitgmail.py -i <infile> -p <prefix>")
+		print("python splitgmail.py -i <infile> -o <outdir>")
 		sys.exit(2)
 
 	for opt, arg in opts:
 		if opt in ("-i", "--infile"):
 			in_mbox = arg
-		elif opt in ("-p", "--prefix"):
-			prefix = arg
+		elif opt in ("-o", "--outdir"):
+			out_box = arg
 
-	print("Processing file \"" + in_mbox + "\", output prefix \"" + prefix + "\"")
+	print("Processing file \"" + in_mbox + "\", output \"" + out_box + "\"")
 	sys.stdout.flush()
 
-	# Create common mailboxes
-	boxes = {
-		"Inbox":	mailbox.mbox(prefix + "INBOX", create=True),
-		"Sent":		mailbox.mbox(prefix + "Sent", create=True),
-		"Archive":	mailbox.mbox(prefix + "Archive", create=True)
-	}
+	destMbox = mailbox.Maildir(out_box, create=True)
+
+	# create common subfolders, INBOX is root
+	destMbox.add_folder("Sent")
+	destMbox.add_folder("Archive")
 
 	sourcembox = mailbox.mbox(in_mbox, create=False)
 	print(str(sourcembox.__len__()) + " messages to process")
@@ -42,17 +42,19 @@ def main(argv):
 		flagged = False
 		mcount += 1
 		gmail_labels = message["X-Gmail-Labels"]
+		# extract delivery date from mbox "From_" field
+		ddate = message.get_from()
+		ddate = ddate.split(' ', 1)[1]
+		depoch = time.mktime(time.strptime(ddate.strip(), "%a %b %d %H:%M:%S +0000 %Y")) - time.timezone
 		tbox = "Archive"				# default target box: Archive
 
 		if gmail_labels:
 			gmail_labels = gmail_labels.split(',')	# from here we only work on an array to avoid partial matches
-			# handle flags
 			if "Unread" in gmail_labels:
 				read = False
 			if "Starred" in gmail_labels:
 				flagged = True
 
-			# order matters!
 			if "Spam" in gmail_labels:		# skip all spam
 				mjunk += 1
 				continue
@@ -88,14 +90,24 @@ def main(argv):
 
 		mfrom = message["From"] or "Unknown"
 		mid = message["Message-Id"] or "<N/A>"
-		print("Storing " + mid + " from \"" + mfrom + "\" to mbox \"" + tbox + "\"")
+		print("Storing " + mid + " from \"" + mfrom + "\" to folder \"" + tbox + "\"")
 		msaved += 1
 
-		if tbox not in boxes:
-			boxes[tbox] = mailbox.mbox(prefix + tbox, create=True)
-		boxes[tbox].add(message)
+		# convert message to maildir
+		MDmsg = mailbox.MaildirMessage(message)
 
-	print(str(mcount) + " messages processed, " + str(msaved) + " messages saved")
+		# fixup received date
+		MDmsg.set_date(depoch)
+
+		if tbox == "Inbox":
+			destMbox.add(MDmsg)
+		else:
+			if tbox not in destMbox.list_folders():
+				destMbox.add_folder(tbox)
+			tfolder = destMbox.get_folder(tbox)
+			tfolder.add(MDmsg)
+
+	print(str(mcount) + " messages processed, " + str(saved) + " messages saved")
 	print("ignored: " + str(mjunk) + " spam, " + str(mchat) + " mchat")
 
 if __name__ == "__main__":
